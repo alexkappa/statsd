@@ -1,7 +1,8 @@
-package message
+package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"strconv"
 )
 
@@ -15,6 +16,7 @@ const (
 // The Raw type is a wrapper for byte slice.
 type Raw []byte
 
+// To satisfy the `io.Reader` interface.
 func (r Raw) Read(p []byte) (n int, err error) {
 	for i := 0; i < len(r); i++ {
 		p[i] = r[i]
@@ -30,30 +32,27 @@ type Message struct {
 	Sampling float32
 }
 
-func (m *Message) Equals(other *Message) bool {
-	return m.Bucket == other.Modifier &&
-		m.Value == other.Value &&
-		m.Modifier == other.Modifier &&
-		m.Sampling == other.Sampling
-}
-
+// Consumes a token into the messages bucket property.
 func ConsumeBucketToken(m *Message, b []byte) error {
 	m.Bucket = string(b)
 	return nil
 }
 
+// Consumes a token into the messages value property.
 func ConsumeValueToken(m *Message, b []byte) (err error) {
 	m.Value, err = strconv.Atoi(string(b))
 	return err
 }
 
+// Consumes a token into the messages modifier property.
 func ConsumeModifierToken(m *Message, b []byte) error {
 	m.Modifier = string(b)
 	return nil
 }
 
+// Consumes a token into the messages sampling property.
 func ConsumeSamplingToken(m *Message, b []byte) error {
-	f, err := strconv.ParseFloat(string(b), 32)
+	f, err := strconv.ParseFloat(string(b[1:]), 32)
 	if err != nil {
 		m.Sampling = 1
 		return err
@@ -62,24 +61,44 @@ func ConsumeSamplingToken(m *Message, b []byte) error {
 	return err
 }
 
-func ScanStat(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	l := len(data)
-	if atEOF && l == 0 {
-		return 0, nil, nil
+func isSplitChar(b byte) bool {
+	switch b {
+	case ':', '|', '@', '\n':
+		return true
 	}
-	for i := 0; i < l; i++ {
-		switch data[i] {
-		case ':', '|':
-			return i + 1, data[0:i], nil
+	return false
+}
+
+// Used to split a byte slice into tokens with `bufio.Scanner.Split`.
+func ScanStat(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	length := len(data)
+	start := 0
+	for ; start < length; start++ {
+		if !isSplitChar(data[start]) {
+			break
 		}
 	}
-	return l + 1, data, nil
+	if atEOF && length == 0 {
+		return 0, nil, nil
+	}
+	for i := start; i < length; i++ {
+		if isSplitChar(data[i]) {
+			return i + 1, data[start:i], nil
+		}
+	}
+	if atEOF && length > start {
+		return length, data[start:], nil
+	}
+	return 0, nil, nil
 }
 
 // The consumer type defines a function signature that can be used when
 // consuming message tokens.
 type Consumer func(*Message, []byte) error
 
+// We create this map to represent the order in which tokens should be consumed.
+// The scanner increments the index every time it scans a token, calling a
+// different consumer each time.
 var consumers = map[int]Consumer{
 	0: ConsumeBucketToken,
 	1: ConsumeValueToken,
@@ -87,11 +106,13 @@ var consumers = map[int]Consumer{
 	3: ConsumeSamplingToken,
 }
 
-func Parse(r Raw) (*Message, error) {
-	scanner := bufio.NewScanner(r)
+// Parses a `Raw` message to a `Message`.
+func Parse(b []byte) (*Message, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(b))
 	scanner.Split(ScanStat)
 	i := 0
 	m := new(Message)
+	m.Sampling = 1
 	for scanner.Scan() {
 		err := consumers[i](m, scanner.Bytes())
 		if err != nil {

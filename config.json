@@ -1,3 +1,9 @@
 {
-  "address": ":8125"
+  "address": ":8125",
+  "flush_interval": "10s",
+  "backends": [
+    "graphite",
+    "console",
+    "repeater"
+  ]
 }

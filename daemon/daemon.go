@@ -1,17 +1,18 @@
 package daemon
 
 import (
-	"fmt"
 	"net"
+	"os"
 
 	"github.com/alexkappa/statsd/config"
-	"github.com/alexkappa/statsd/daemon/message"
+	"gopkg.in/yieldr/go-log.v0/log"
 )
 
 type Daemon struct {
 	address *net.UDPAddr
-	mbuffer chan *message.Message
+	msgbuf  chan *Message
 	err     chan error
+	log     *log.Logger
 }
 
 func New(c *config.Config) (*Daemon, error) {
@@ -19,10 +20,16 @@ func New(c *config.Config) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	logger := log.NewSimple(
+		log.WriterSink(
+			os.Stdout,
+			log.BasicFormat,
+			log.BasicFields))
 	d := &Daemon{
 		address,
-		make(chan *message.Message, 1000),
+		make(chan *Message, 1000),
 		make(chan error),
+		logger,
 	}
 	return d, nil
 }
@@ -33,36 +40,36 @@ func (d *Daemon) Run() error {
 		return err
 	}
 	defer conn.Close()
-	go d.error()
-	go d.flush()
+	go d.Err()
+	go d.Flush()
 	for {
-		message := make(message.Raw, 512)
-		n, _, error := conn.ReadFrom(message)
-		if error != nil {
-			continue
+		message := make([]byte, 512)
+		n, _, err := conn.ReadFrom(message)
+		if err != nil {
+			d.log.Error(err)
 		}
 		go d.handle(message[0:n])
 	}
 }
 
-func (d *Daemon) handle(raw message.Raw) {
-	m, err := message.Parse(raw)
+func (d *Daemon) handle(raw Raw) {
+	m, err := Parse(raw)
 	if err != nil {
 		d.err <- err
 	} else {
-		d.mbuffer <- m
+		d.msgbuf <- m
 	}
 }
 
-func (d *Daemon) flush() {
+func (d *Daemon) Flush() {
 	for {
-		m := <-d.mbuffer
-		fmt.Printf("message: %s:%d|%s|@%f\n", m.Bucket, m.Value, m.Modifier, m.Sampling)
+		m := <-d.msgbuf
+		d.log.Infof("message: %s:%d|%s|@%f", m.Bucket, m.Value, m.Modifier, m.Sampling)
 	}
 }
 
-func (d *Daemon) error() {
+func (d *Daemon) Err() {
 	for {
-		fmt.Printf("error: %s\n", <-d.err)
+		d.log.Error(<-d.err)
 	}
 }
